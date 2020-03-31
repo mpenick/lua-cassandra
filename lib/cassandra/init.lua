@@ -129,6 +129,7 @@ function _Host.new(opts)
     host = opts.host or '127.0.0.1',
     port = opts.port or 9042,
     keyspace = opts.keyspace,
+		sni_name = opts.sni_name,
     protocol_version = opts.protocol_version or cql.def_protocol_version,
     ssl = opts.ssl,
     verify = opts.verify,
@@ -197,7 +198,7 @@ local function ssl_handshake(self)
     cert = self.cert
   }
 
-  return self.sock:sslhandshake(false, nil, self.verify, params)
+  return self.sock:sslhandshake(nil, self.sni_name, self.verify, params)
 end
 
 --- Connect to the remote node.

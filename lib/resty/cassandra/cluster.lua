@@ -219,11 +219,12 @@ end
 -- utils
 ----------------------------
 
-local function spawn_peer(host, port, keyspace, opts)
+local function spawn_peer(host, port, keyspace, sni_name, opts)
   opts = opts or {}
   opts.host = host
   opts.port = port
   opts.keyspace = keyspace
+	opts.sni_name = sni_name
   return cassandra.new(opts)
 end
 
@@ -235,7 +236,12 @@ local function check_peer_health(self, host, coordinator_options, retry)
     keyspace = coordinator_options.keyspace or self.keyspace
   end
 
-  local peer, err = spawn_peer(host, self.default_port, keyspace, self.peers_opts)
+  local peer, err 
+	if self.sni_host then
+		peer, err = spawn_peer(self.sni_host, self.default_port, keyspace, host, self.peers_opts)
+	else
+		peer, err = spawn_peer(host, self.default_port, keyspace, nil, self.peers_opts)
+	end
   if not peer then return nil, err
   else
     peer:settimeout(self.timeout_connect)
@@ -372,6 +378,16 @@ function _Cluster.new(opts)
         return nil, 'cafile must be a string'
       end
       peers_opts.cafile = v
+    elseif k == 'cert' then
+      if type(v) ~= 'string' then
+        return nil, 'cert must be a string'
+      end
+      peers_opts.cert = v
+    elseif k == 'key' then
+      if type(v) ~= 'string' then
+        return nil, 'key must be a string'
+      end
+      peers_opts.key = v
     elseif k == 'auth' then
       if type(v) ~= 'table' then
         return nil, 'auth seems not to be an auth provider'
@@ -380,6 +396,10 @@ function _Cluster.new(opts)
     elseif k == 'default_port' then
       if type(v) ~= 'number' then
         return nil, 'default_port must be a number'
+      end
+    elseif k == 'sni_host' then
+      if type(v) ~= 'string' then
+        return nil, 'sni_host must be a string'
       end
     elseif k == 'contact_points' then
       if type(v) ~= 'table' then
@@ -422,6 +442,7 @@ function _Cluster.new(opts)
     keyspace = opts.keyspace,
     default_port = opts.default_port or 9042,
     contact_points = opts.contact_points or {'127.0.0.1'},
+		sni_host = opts.sni_host,
     timeout_read = opts.timeout_read or 2000,
     timeout_connect = opts.timeout_connect or 1000,
     retry_on_timeout = opts.retry_on_timeout == nil and true or opts.retry_on_timeout,
@@ -578,14 +599,14 @@ function _Cluster:refresh(timeout)
       coordinator:settimeout(self.timeout_read)
 
       local local_rows, err = coordinator:execute [[
-        SELECT data_center,rpc_address,release_version FROM system.local
+        SELECT data_center,rpc_address,release_version,host_id FROM system.local
       ]]
       if not local_rows then return nil, err end
 
       assert(local_rows[1] ~= nil, 'local host could not be found')
 
       local rows, err = coordinator:execute [[
-        SELECT peer,data_center,rpc_address,release_version FROM system.peers
+        SELECT peer,data_center,rpc_address,release_version,host_id FROM system.peers
       ]]
       if not rows then return nil, err end
 
@@ -607,7 +628,8 @@ function _Cluster:refresh(timeout)
       rows[#rows+1] = { -- local host
         rpc_address = local_addr,
         data_center = local_rows[1].data_center,
-        release_version = local_rows[1].release_version
+        release_version = local_rows[1].release_version,
+				host_id = local_rows[1].host_id 
       }
 
       log(DEBUG, _log_prefix, 'refresh: cluster topology fetched ',
@@ -615,19 +637,23 @@ function _Cluster:refresh(timeout)
 
       for i = 1, #rows do
         if rows[i].rpc_address then
-          if rows[i].rpc_address == "0.0.0.0" or rows[i].rpc_address == "::" then
-            if self.logging then
-              log(WARN, _log_prefix, 'found host with \'', rows[i].rpc_address, '\',',
-                                     ' as rpc_address, using \'', rows[i].peer, '\'',
-                                     ' to contact it instead. If this is ',
-                                     'incorrect you should avoid using \'',
-                                     rows[i].rpc_address, '\' in rpc_address')
-            end
+					if self.sni_host then
+						rows[i].host = rows[i].host_id
+					else
+						if rows[i].rpc_address == "0.0.0.0" or rows[i].rpc_address == "::" then
+							if self.logging then
+								log(WARN, _log_prefix, 'found host with \'', rows[i].rpc_address, '\',',
+								' as rpc_address, using \'', rows[i].peer, '\'',
+								' to contact it instead. If this is ',
+								'incorrect you should avoid using \'',
+								rows[i].rpc_address, '\' in rpc_address')
+							end
 
-            rows[i].host = rows[i].peer
-          else
-            rows[i].host = rows[i].rpc_address
-          end
+							rows[i].host = rows[i].peer
+						else
+							rows[i].host = rows[i].rpc_address
+						end
+					end
         end
       end
 
