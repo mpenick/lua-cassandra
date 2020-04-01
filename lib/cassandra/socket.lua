@@ -49,7 +49,7 @@ do
       self.sock:close()
       return 1
     end,
-    sslhandshake = function(self, reused_session, _, verify, opts)
+    sslhandshake = function(self, reused_session, sni_name, verify, opts)
       opts = opts or {}
       local return_bool = reused_session == false
 
@@ -69,6 +69,7 @@ do
         return return_bool and false or nil, err
       end
 
+      sock:sni(sni_name)
       local ok, err = sock:dohandshake()
       if not ok then
         return return_bool and false or nil, err
